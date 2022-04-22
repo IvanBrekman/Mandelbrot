@@ -4,11 +4,13 @@
 #include <cmath>
 #include <QDebug>
 
-#include <xmmintrin.h>
-#include <pmmintrin.h>
+#include <immintrin.h>
 
-const int HEIGHT    = 600;
-const int WIDTH     = HEIGHT * 1.5;
+const int HEIGHT            = 600;
+const int WIDTH             = HEIGHT * 1.5;
+
+const int POINTS_PER_ITER   = 8;
+const int REPEATS_CALC      = 10;
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -164,86 +166,95 @@ void MainWindow::draw_mand_no_sse(QPainter* canvas)
     float img_x = this->width();
     float img_y = this->height();
 
-    for (int iy = 0; iy < img_y; iy++) {
-        for (int ix = 0; ix < img_x; ix++) {
-            float x0 = ix * (rect.xb - rect.xa) / img_x + rect.xa;
-            float y0 = iy * (rect.yb - rect.ya) / img_y + rect.ya;
+    for (int rep = 0; rep < REPEATS_CALC; rep++) {
+        for (int iy = 0; iy < img_y; iy++) {
+            for (int ix = 0; ix < img_x; ix++) {
+                float x0 = ix * (rect.xb - rect.xa) / img_x + rect.xa;
+                float y0 = iy * (rect.yb - rect.ya) / img_y + rect.ya;
 
-            int n = 0;
-            float x = x0, y = y0;
+                int n = 0;
+                float x = x0, y = y0;
 
-            for (; n < iterations; n++) {
-                float x2 = x * x;
-                float y2 = y * y;
-                float xy = x * y;
+                for (; n < iterations; n++) {
+                    float x2 = x * x;
+                    float y2 = y * y;
+                    float xy = x * y;
 
-                float r2 = x2 + y2;
+                    float r2 = x2 + y2;
 
-                if (r2 >= r2_max) break;
+                    if (r2 >= r2_max) break;
 
-                x = x2 - y2 + x0;
-                y = xy + xy + y0;
+                    x = x2 - y2 + x0;
+                    y = xy + xy + y0;
+                }
+
+                if (rep + 1 == REPEATS_CALC) {
+                    QPen pen = QPen(palette[n]);
+
+                    canvas->setPen(pen);
+                    canvas->drawPoint(QPoint(ix, iy));
+                }
             }
-
-            QPen pen = QPen(palette[n]);
-
-            canvas->setPen(pen);
-            canvas->drawPoint(QPoint(ix, iy));
         }
     }
 }
 
 void MainWindow::draw_mand_with_sse(QPainter *canvas)
 {
-    float img_x = this->width();
-    float img_y = this->height();
+    for (int rep = 0; rep < REPEATS_CALC; rep++) {
+        float img_x = this->width();
+        float img_y = this->height();
 
-    float w_sh  = (rect.xb - rect.xa) / img_x;
-    float h_sh  = (rect.yb - rect.ya) / img_y;
+        float w_sh  = (rect.xb - rect.xa) / img_x;
+        float h_sh  = (rect.yb - rect.ya) / img_y;
 
-    __m128 _r2_max_ar = _mm_set_ps1(r2_max);
-    __m128 _xa_ps     = _mm_set_ps1(rect.xa);
-    __m128 _w_sh_ps   = _mm_set_ps1(w_sh);
-    __m128 _one_ps    = _mm_set_ps1(1);
+        __m256 _r2_max_ar = _mm256_set1_ps(r2_max);
+        __m256 _xa_ps     = _mm256_set1_ps(rect.xa);
+        __m256 _w_sh_ps   = _mm256_set1_ps(w_sh);
+        __m256 _one_ps    = _mm256_set1_ps(1);
 
-    __m128 _3210_w_ps = _mm_set_ps(3, 2, 1, 0);
-           _3210_w_ps = _mm_mul_ps(_3210_w_ps, _w_sh_ps);
+        __m256 _3210_w_ps = _mm256_set_ps(7, 6, 5, 4, 3, 2, 1, 0);
+               _3210_w_ps = _mm256_mul_ps(_3210_w_ps, _w_sh_ps);
 
-    for (int iy = 0; iy < img_y; iy++) {
-        for (int ix = 0; ix < img_x; ix += 4) {
-            __m128 _x0 = _mm_set_ps1(ix * w_sh);
-                   _x0 = _mm_add_ps(_x0, _3210_w_ps);
-                   _x0 = _mm_add_ps(_x0, _xa_ps);
-            __m128 _y0 = _mm_set_ps1(iy * h_sh + rect.ya);
+        for (int iy = 0; iy < img_y; iy++) {
+            __m256 _y0 = _mm256_set1_ps(iy * h_sh + rect.ya);
 
-            __m128 _x  = _mm_movehdup_ps(_x0);
-            __m128 _y  = _mm_movehdup_ps(_y0);
+            for (int ix = 0; ix < img_x; ix += POINTS_PER_ITER) {
+                __m256 _x0 = _mm256_set1_ps(ix * w_sh);
+                       _x0 = _mm256_add_ps(_x0, _3210_w_ps);
+                       _x0 = _mm256_add_ps(_x0, _xa_ps);
 
-            __m128i _n  = _mm_set1_epi32(0);
-            for (int iter = 0; iter < iterations; iter++) {
-                __m128 _x2 = _mm_mul_ps(_x, _x);
-                __m128 _y2 = _mm_mul_ps(_y, _y);
-                __m128 _xy = _mm_mul_ps(_x, _y);
+                __m256 _x  = _x0;
+                __m256 _y  = _y0;
 
-                __m128 _r2 = _mm_add_ps(_x2, _y2);
+                __m256i _n  = _mm256_set1_epi32(0);
+                for (int iter = 0; iter < iterations; iter++) {
+                    __m256 _x2 = _mm256_mul_ps(_x, _x);
+                    __m256 _y2 = _mm256_mul_ps(_y, _y);
+                    __m256 _xy = _mm256_mul_ps(_x, _y);
 
-                __m128 _cmp = _mm_cmple_ps(_r2, _r2_max_ar);
+                    __m256 _r2 = _mm256_add_ps(_x2, _y2);
 
-                int mask = _mm_movemask_ps(_cmp);
-                if (!mask) break;
+                    __m256 _cmp = _mm256_cmp_ps(_r2, _r2_max_ar, _CMP_LE_OS);
 
-                _n = _mm_add_epi32(_n, _mm_cvtps_epi32(_mm_and_ps(_cmp, _one_ps)));
+                    int mask = _mm256_movemask_ps(_cmp);
+                    if (!mask) break;
 
-                _x = _mm_sub_ps(_x2, _y2); _x = _mm_add_ps(_x, _x0);
-                _y = _mm_add_ps(_xy, _xy); _y = _mm_add_ps(_y, _y0);
-            }
+                    _n = _mm256_add_epi32(_n, _mm256_cvtps_epi32(_mm256_and_ps(_cmp, _one_ps)));
 
-            int* n = (int*) &_n;
-            for (int i = 0; i < 4; i++) {
-                QPen pen = QPen(palette[(int)n[i]]);
+                    _x = _mm256_sub_ps(_x2, _y2); _x = _mm256_add_ps(_x, _x0);
+                    _y = _mm256_add_ps(_xy, _xy); _y = _mm256_add_ps(_y, _y0);
+                }
 
-                canvas->setPen(pen);
-                canvas->drawPoint(QPoint(ix + i, iy));
+                if (rep + 1 == REPEATS_CALC) {
+                    int* n = (int*) &_n;
+                    for (int i = 0; i < POINTS_PER_ITER; i++) {
+                        QPen pen = QPen(palette[(int)n[i]]);
+
+                        canvas->setPen(pen);
+                        canvas->drawPoint(QPoint(ix + i, iy));
+                    }
+                }
             }
         }
     }
@@ -288,10 +299,11 @@ void MainWindow::print_fps()
 {
     if (frame_count == 0) {
         m_time.start();
-    } else if (frame_count == 10) {
-        qDebug() << "FPS: " << frame_count / ((float)m_time.elapsed() / 1000.0f);
+    } else if (frame_count > 5) {
         frame_count = 0;
         m_time.restart();
+    } else {
+        qDebug() << "FPS: " << REPEATS_CALC * frame_count / ((float)m_time.elapsed() / 1000.0f);
     }
     frame_count++;
 }
